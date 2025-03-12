@@ -1,0 +1,9 @@
+[package]
+name = "test-gpui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cpal = "0.15.3"
+gpui = { git = "https://github.com/zed-industries/zed" }
+opus = "0.3.0"
