@@ -45,15 +45,8 @@ pub fn convert_to_stereo<T: Copy>(pcm_data: &[T]) -> Vec<T> {
     result
 }
 
-pub fn convert_to_mono<T: Copy>(pcm_data: &[T]) -> Vec<T> {
-    let input_length = pcm_data.len();
-    let output_length = input_length / 2;
-
-    let mut result = Vec::with_capacity(output_length);
-    for (index, sample) in pcm_data.iter().enumerate() {
-        if index % 2 == 1 {
-            result.push(*sample);
-        }
-    }
-    result
+pub fn convert_to_mono(data: &[f32]) -> Vec<f32> {
+    data.chunks(2)
+        .map(|stereo| (stereo[0] + stereo[1]) * 0.5) // Average L+R
+        .collect()
 }

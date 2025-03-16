@@ -4,7 +4,7 @@ use cpal::{
     InputCallbackInfo, OutputCallbackInfo, default_host,
     traits::{DeviceTrait, HostTrait, StreamTrait},
 };
-use opus::{Channels, Decoder, Encoder};
+use opus::{Channels, Decoder, Encoder, packet::get_nb_samples};
 use test_gpui::util::{convert_to_mono, convert_to_stereo};
 
 const ENCODING_SAMPLE_RATE: u32 = 48_000;
@@ -19,9 +19,10 @@ fn main() {
     println!("Input Sample Rate: {:?}", &config.sample_rate());
     println!("Input Channel Count: {:?}", &config.channels());
 
-    let mut encoded_bytes: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
-    let mut encoded_input_clone = encoded_bytes.clone();
-    let mut encoded_output_clone = encoded_bytes.clone();
+    let encoded_bytes: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let encoded_input_clone = encoded_bytes.clone();
+    let encoded_output_clone = encoded_bytes.clone();
+    let encoded_decode_clone = encoded_bytes.clone();
 
     // Initialize the encoder
     let mut encoder = Encoder::new(
@@ -34,15 +35,23 @@ fn main() {
     let mut buffer = Vec::with_capacity(FRAME_SIZE);
 
     let data_callback = move |data: &[f32], _: &InputCallbackInfo| {
-        buffer.extend_from_slice(&convert_to_stereo(data));
+        // Convert and accumulate stereo data
+        let stereo_data: Vec<f32> = data.iter().flat_map(|&s| vec![s, s]).collect();
+        buffer.extend_from_slice(&stereo_data);
+
+        // Check if we have enough data for one complete frame
         if buffer.len() >= FRAME_SIZE * 2 {
             let drain = buffer.drain(..FRAME_SIZE * 2).collect::<Vec<f32>>();
+
+            // Encode the complete frame
             let mut encoded_buffer = [0u8; FRAME_SIZE * 2];
             let size = encoder
                 .encode_float(&drain[..], &mut encoded_buffer)
                 .unwrap();
+            println!("Encoded packet size: {}", size); // Monitor the encoded packet size
+
             let mut encoded = encoded_input_clone.lock().unwrap();
-            encoded.extend_from_slice(&encoded_buffer[..size]);
+            encoded.extend_from_slice(&encoded_buffer[..size]); // Store the encoded packet
         }
     };
 
@@ -66,27 +75,32 @@ fn main() {
     let mut overflow_buffer = Vec::<f32>::new();
 
     let output_data_callback = move |data: &mut [f32], _: &OutputCallbackInfo| {
-        dbg!(data.len());
         let mut encoded = encoded_output_clone.lock().unwrap();
         if encoded.is_empty() {
             return;
         }
-        if encoded.len() >= 0 {
-            let size = decoder
-                .decode_float(&encoded, &mut output_buffer_mono, false)
-                .unwrap();
 
-            dbg!(size);
-            if output_channels >= 2 {
-                overflow_buffer.extend_from_slice(&output_buffer_mono[..size]);
-            } else {
-                overflow_buffer.extend_from_slice(&convert_to_mono(&output_buffer_mono[..size]));
-            }
+        // Decode the packet
+        let size = decoder
+            .decode_float(&encoded, &mut output_buffer_mono, false)
+            .unwrap();
+        println!("Decoded output size: {}", size); // Monitor decoded output size
+
+        // Handle output for stereo or mono
+        if output_channels >= 2 {
+            overflow_buffer.extend_from_slice(&output_buffer_mono[..size]);
+        } else {
+            overflow_buffer.extend_from_slice(&convert_to_mono(&output_buffer_mono[..size]));
         }
+
+        // Ensure buffer consistency
         let to_consume = data.len().min(overflow_buffer.len());
-        data[..to_consume].copy_from_slice(&overflow_buffer[..to_consume]);
-        overflow_buffer.drain(..to_consume);
-        dbg!(overflow_buffer.len());
+        if to_consume > 0 {
+            data[..to_consume].copy_from_slice(&overflow_buffer[..to_consume]);
+            overflow_buffer.drain(..to_consume);
+        }
+
+        // Clean up the encoded buffer
         encoded.drain(..);
     };
 
